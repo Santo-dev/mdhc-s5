@@ -1,0 +1,354 @@
+/* ---- lecture à voix haute : voix Gemini (avec la clé de Santo) ou voix de l'iPhone ---- */
+const synth = window.speechSynthesis || null;
+const bVoix=$("b-voix"), toastEl=$("toast");
+const ICO_LIRE='<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 1l9 5-9 5z"/></svg>';
+const ICO_PAUSE='<svg viewBox="0 0 12 12" aria-hidden="true"><rect x="2" y="1" width="3" height="10"/><rect x="7" y="1" width="3" height="10"/></svg>';
+const CLE_VOIX="mdhc-s5-voix";
+const VOIX_GEMINI=[["Charon","posée"],["Schedar","égale"],["Sulafat","chaleureuse"],["Gacrux","mûre"],["Iapetus","claire"],["Algieba","veloutée"],["Kore","ferme"],["Achernar","douce"],["Vindemiatrix","tendre"],["Enceladus","soufflée"]];
+const STYLE="calm, expressive audiobook narration with natural pauses; Japanese and German words pronounced in their own language";
+let reglages={cle:"", voix:"Charon", vitesse:1};
+try{ Object.assign(reglages, JSON.parse(localStorage.getItem(CLE_VOIX)||"{}")); }catch(e){}
+function sauverReglages(){ try{ localStorage.setItem(CLE_VOIX, JSON.stringify(reglages)); }catch(e){} }
+
+let lecture=null, enCours=false, moteur=null, gen=0, verrou=null, voixApp=null, dernierEnonce=null;
+const cacheTextes=[];
+let tToast=null;
+function toast(msg, ms){
+  toastEl.textContent=msg; toastEl.classList.add("vu");
+  clearTimeout(tToast); tToast=setTimeout(()=>toastEl.classList.remove("vu"), ms||5000);
+}
+
+function choisirVoix(){
+  if(!synth) return;
+  const vs=synth.getVoices().filter(v=>/^fr/i.test(v.lang));
+  const score=v=>(/fr[-_]FR/i.test(v.lang)?4:/fr[-_]BE/i.test(v.lang)?3:0)+(/premium|enhanced|améliorée|amélie|audrey|thomas/i.test(v.name)?2:0)+(v.localService?1:0);
+  vs.sort((a,b)=>score(b)-score(a));
+  voixApp=vs[0]||null;
+}
+function nettoyer(s){
+  return s.replace(/[  ]/g," ").replace(/^\s*[—–]\s*/,"").replace(/\s[—–]\s/g,", ").replace(/\s+/g," ").trim();
+}
+function textes(ci){
+  if(cacheTextes[ci]) return cacheTextes[ci];
+  const d=document.createElement("div"); d.innerHTML=chapitres[ci].html;
+  cacheTextes[ci]=Array.prototype.map.call(d.children, el=>{
+    if(el.classList.contains("ouverture")) return "Chapitre "+chapitres[ci].n+". "+chapitres[ci].titre+".";
+    if(el.classList.contains("bloc")){
+      const h=el.querySelector("h3"), lieu=h?h.textContent.toLocaleLowerCase("fr"):"";
+      const reste=Array.prototype.filter.call(el.children,x=>x!==h).map(x=>x.textContent).join(" ");
+      return (lieu?nettoyer(lieu.charAt(0).toLocaleUpperCase("fr")+lieu.slice(1))+". ":"")+nettoyer(reste);
+    }
+    return nettoyer(el.textContent);
+  });
+  return cacheTextes[ci];
+}
+function decouper(t){
+  const morceaux=(t.match(/[^.!?…]+(?:[.!?…]+[»"\s]*|$)/g)||[t]).map(s=>s.trim()).filter(Boolean);
+  const out=[];
+  morceaux.forEach(s=>{
+    if(s.length<=220){ out.push(s); return; }
+    let cur="";
+    s.replace(/([,;:])\s/g,"$1\u0001").split("\u0001").forEach(x=>{ if((cur+" "+x).length>220 && cur){ out.push(cur); cur=x; } else cur=cur?cur+" "+x:x; });
+    if(cur) out.push(cur);
+  });
+  return out.length?out:[t];
+}
+function pageDe(l){ return base[l.ci]+(debuts[l.ci][Math.min(l.b,debuts[l.ci].length-1)]||0); }
+function marquer(v){
+  if(!v || v.ch<0) return;
+  const kids=v.flux.children;
+  for(let i=0;i<kids.length;i++) kids[i].classList.toggle("lu", !!(lecture && v.ch===lecture.ci && i===lecture.b));
+}
+function marquerTout(){ [G,D,R,V].forEach(marquer); }
+function majVoix(){
+  bVoix.innerHTML = enCours ? ICO_PAUSE : ICO_LIRE;
+  bVoix.classList.toggle("joue", enCours);
+  bVoix.setAttribute("aria-pressed", enCours?"true":"false");
+  bVoix.setAttribute("aria-label", enCours?"Mettre la lecture en pause":"Lire à voix haute");
+  if("mediaSession" in navigator){ try{ navigator.mediaSession.playbackState = enCours?"playing":"paused"; }catch(e){} }
+}
+function chargement(on){ bVoix.classList.toggle("charge", !!on); }
+async function garderEveil(on){
+  try{
+    if(on && !verrou && navigator.wakeLock){ verrou=await navigator.wakeLock.request("screen"); verrou.addEventListener("release",()=>{ verrou=null; }); }
+    else if(!on && verrou){ const v=verrou; verrou=null; await v.release(); }
+  }catch(e){}
+}
+function suivreParagraphe(){
+  const t=pageDe(lecture);
+  const avance = double ? planche(t)>planche(p) : t>p;
+  if(avance) aller(t);
+  marquerTout();
+  if("mediaSession" in navigator && window.MediaMetadata){
+    try{ navigator.mediaSession.metadata=new MediaMetadata({title:"Chapitre "+chapitres[lecture.ci].n+" · "+chapitres[lecture.ci].titre, artist:"Le Maître du Haut-Château", album:"Saison 5", artwork:[{src:"icone-512.png",sizes:"512x512",type:"image/png"}]}); }catch(e){}
+  }
+}
+function finLecture(){
+  enCours=false; lecture=null; morceau=null; majVoix(); chargement(false); garderEveil(false); marquerTout(); aller(dernierVrai);
+}
+
+/* -- voix de l'iPhone, phrase par phrase -- */
+function parlerAppareil(){
+  if(!enCours || !synth) return;
+  const g=++gen;
+  while(lecture && lecture.b>=textes(lecture.ci).length){
+    lecture = lecture.ci+1<chapitres.length ? {ci:lecture.ci+1,b:0,s:0} : null;
+  }
+  if(!lecture){ finLecture(); return; }
+  const phrases=decouper(textes(lecture.ci)[lecture.b]);
+  if(lecture.s>=phrases.length){ lecture.b++; lecture.s=0; parlerAppareil(); return; }
+  suivreParagraphe();
+  const u=new SpeechSynthesisUtterance(phrases[lecture.s]);
+  u.lang = voixApp ? voixApp.lang : "fr-FR";
+  if(voixApp) u.voice=voixApp;
+  u.rate=0.95*(reglages.vitesse||1);
+  u.onend=()=>{ if(g!==gen || !enCours) return; lecture.s++; parlerAppareil(); };
+  u.onerror=e=>{
+    if(g!==gen || !enCours) return;
+    if(e.error==="interrupted"||e.error==="canceled") return;
+    if(e.error==="not-allowed"){ pause(); return; }
+    lecture.s++; parlerAppareil();
+  };
+  dernierEnonce=u;
+  synth.speak(u);
+}
+
+/* -- voix Gemini, par morceaux de quelques paragraphes -- */
+const audio=new Audio(); audio.preload="auto"; audio.setAttribute("playsinline","");
+let morceau=null, urlCourante=null, audioDebloque=false;
+const enVol=new Map();
+function morceauDe(ci,b){
+  const t=textes(ci); let b1=b, n=t[b].length;
+  while(b1+1<t.length && n+t[b1+1].length+2<=1400){ b1++; n+=t[b1].length+2; }
+  return {ci,b0:b,b1};
+}
+function suivantDe(m){
+  if(!m) return null;
+  if(m.b1+1<textes(m.ci).length) return morceauDe(m.ci,m.b1+1);
+  if(m.ci+1<chapitres.length) return morceauDe(m.ci+1,0);
+  return null;
+}
+function cleM(m){ return reglages.voix+"|"+chapitres[m.ci].n+"|"+m.b0+"-"+m.b1; }
+function texteM(m){ return textes(m.ci).slice(m.b0,m.b1+1).join("\n\n"); }
+
+let dbp=null;
+function base_(){
+  if(!dbp) dbp=new Promise((res,rej)=>{
+    try{ const r=indexedDB.open("mdhc-s5-audio",1);
+      r.onupgradeneeded=()=>r.result.createObjectStore("a",{keyPath:"k"});
+      r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error);
+    }catch(e){ rej(e); }
+  });
+  return dbp;
+}
+async function idbGet(k){
+  try{ const d=await base_(); return await new Promise(res=>{ const q=d.transaction("a").objectStore("a").get(k); q.onsuccess=()=>res(q.result?q.result.blob:null); q.onerror=()=>res(null); }); }
+  catch(e){ return null; }
+}
+async function idbPut(k,blob){
+  try{
+    const d=await base_(); const st=d.transaction("a","readwrite").objectStore("a");
+    st.put({k,blob,t:Date.now()});
+    const q=st.getAllKeys();
+    q.onsuccess=()=>{ const ks=q.result||[]; if(ks.length<=24) return;
+      const q2=st.getAll(); q2.onsuccess=()=>{ (q2.result||[]).sort((a,b)=>b.t-a.t).slice(24).forEach(x=>st.delete(x.k)); }; };
+  }catch(e){}
+}
+function b64ToBytes(s){ const bin=atob(s); const u=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++) u[i]=bin.charCodeAt(i); return u; }
+function enWav(pcm, rate){
+  const h=new ArrayBuffer(44), v=new DataView(h);
+  const w=(o,s)=>{ for(let i=0;i<s.length;i++) v.setUint8(o+i,s.charCodeAt(i)); };
+  w(0,"RIFF"); v.setUint32(4,36+pcm.length,true); w(8,"WAVE"); w(12,"fmt ");
+  v.setUint32(16,16,true); v.setUint16(20,1,true); v.setUint16(22,1,true);
+  v.setUint32(24,rate,true); v.setUint32(28,rate*2,true); v.setUint16(32,2,true); v.setUint16(34,16,true);
+  w(36,"data"); v.setUint32(40,pcm.length,true);
+  return new Blob([h,pcm],{type:"audio/wav"});
+}
+function trouverAudio(o){
+  let best=null;
+  (function walk(x){
+    if(!x || typeof x!=="object" || best) return;
+    if(Array.isArray(x)){ x.forEach(walk); return; }
+    const d=x.data;
+    if(typeof d==="string" && d.length>200){ best={data:d, mime:x.mime_type||x.mimeType||""}; return; }
+    for(const k in x) walk(x[k]);
+  })(o);
+  return best;
+}
+function erreurDe(status, txt){
+  let m=txt; try{ const j=JSON.parse(txt); m=(j.error&&j.error.message)||txt; }catch(e){}
+  const e=new Error(String(m||("HTTP "+status)).slice(0,220)); e.status=status; return e;
+}
+async function appelGemini(texte){
+  const tete={"Content-Type":"application/json","x-goog-api-key":reglages.cle};
+  const API="https://generativelanguage.googleapis.com/v1beta/";
+  let r=await fetch(API+"interactions",{method:"POST",headers:tete,body:JSON.stringify({
+    model:"gemini-3.8-flash-tts",
+    input:[{type:"user_input",content:[{type:"text",text:texte,annotations:[{type:"speech_metadata",style:STYLE}]}]}],
+    response_format:{type:"audio"},
+    generation_config:{speech_config:[{voice:reglages.voix}]}
+  })});
+  if(!r.ok){
+    const t1=await r.text();
+    if(r.status===429 || r.status===401 || r.status===403) throw erreurDe(r.status,t1);
+    // interface plus ancienne, au cas où
+    r=await fetch(API+"models/gemini-3.8-flash-tts:generateContent",{method:"POST",headers:tete,body:JSON.stringify({
+      contents:[{parts:[{text:"Read aloud as "+STYLE+":\n\n"+texte}]}],
+      generationConfig:{responseModalities:["AUDIO"],speechConfig:{voiceConfig:{prebuiltVoiceConfig:{voiceName:reglages.voix}}}}
+    })});
+    if(!r.ok) throw erreurDe(r.status, await r.text()||t1);
+  }
+  const a=trouverAudio(await r.json());
+  if(!a) throw erreurDe(0,"réponse sans audio");
+  const u=b64ToBytes(a.data);
+  if(u[0]===82 && u[1]===73 && u[2]===70 && u[3]===70) return new Blob([u],{type:"audio/wav"});
+  const m=/rate=(\d+)/.exec(a.mime);
+  return enWav(u, m?+m[1]:24000);
+}
+function obtenir(m){
+  const k=cleM(m);
+  if(enVol.has(k)) return enVol.get(k);
+  const pr=(async()=>{
+    const c=await idbGet(k); if(c) return c;
+    const b=await appelGemini(texteM(m)); idbPut(k,b); return b;
+  })();
+  enVol.set(k,pr);
+  pr.then(()=>{ setTimeout(()=>enVol.delete(k), 600000); }, ()=>enVol.delete(k));
+  return pr;
+}
+function deverrouillerAudio(){
+  if(audioDebloque) return;
+  audioDebloque=true;
+  try{ audio.src=URL.createObjectURL(enWav(new Uint8Array(4800),24000)); const pr=audio.play(); if(pr) pr.catch(()=>{}); }catch(e){}
+  if(synth){ try{ const u=new SpeechSynthesisUtterance(" "); u.volume=0; synth.speak(u); }catch(e){} }
+}
+async function jouerMorceau(m){
+  const g=++gen;
+  morceau=m; lecture={ci:m.ci,b:m.b0,s:0};
+  suivreParagraphe();
+  chargement(true);
+  let blob;
+  try{ blob=await obtenir(m); }
+  catch(e){ if(g!==gen) return; chargement(false); echecGemini(e); return; }
+  if(g!==gen || !enCours) return;
+  chargement(false);
+  if(urlCourante) URL.revokeObjectURL(urlCourante);
+  urlCourante=URL.createObjectURL(blob);
+  audio.src=urlCourante; audio.playbackRate=reglages.vitesse||1;
+  try{ await audio.play(); }
+  catch(e){ if(g!==gen) return; pause(); toast("Touchez ▶ pour reprendre la lecture."); return; }
+  const s=suivantDe(m);
+  if(s) obtenir(s).then(()=>{ const s2=suivantDe(s); if(s2 && enCours) obtenir(s2).catch(()=>{}); }).catch(()=>{});
+}
+function echecGemini(e){
+  const st=e&&e.status;
+  if(st===429) toast("Limite gratuite de Gemini atteinte pour l'instant : je continue avec la voix de l'iPhone.", 7000);
+  else if(st===400||st===401||st===403) toast("Gemini refuse la clé ("+e.message+"). Je continue avec la voix de l'iPhone.", 9000);
+  else toast("Gemini ne répond pas ("+((e&&e.message)||"erreur")+"). Je continue avec la voix de l'iPhone.", 9000);
+  moteur="appareil"; if(lecture) lecture.s=0;
+  if(!voixApp) choisirVoix();
+  parlerAppareil();
+}
+audio.addEventListener("timeupdate",()=>{
+  if(!enCours || moteur!=="gemini" || !morceau || !lecture || !isFinite(audio.duration) || !audio.duration) return;
+  const t=textes(morceau.ci); let tot=0;
+  for(let i=morceau.b0;i<=morceau.b1;i++) tot+=t[i].length+2;
+  const cible=audio.currentTime/audio.duration*tot; let acc=0, b=morceau.b1;
+  for(let i=morceau.b0;i<=morceau.b1;i++){ acc+=t[i].length+2; if(acc>=cible){ b=i; break; } }
+  if(b!==lecture.b){ lecture.b=b; suivreParagraphe(); etat.loc=endroit(p); memoriser(); }
+});
+audio.addEventListener("ended",()=>{
+  if(!enCours || moteur!=="gemini" || !morceau) return;
+  const s=suivantDe(morceau);
+  if(s) jouerMorceau(s); else finLecture();
+});
+
+/* -- commandes -- */
+function pause(){
+  enCours=false; gen++;
+  if(synth) synth.cancel();
+  audio.pause();
+  chargement(false); majVoix(); garderEveil(false);
+}
+function lire(){
+  if(!chapitres.length) return;
+  deverrouillerAudio();
+  let reprendre=false;
+  if(lecture){
+    const t=pageDe(lecture), d = double ? planche(p)-planche(t) : p-t;
+    reprendre = d===0 || d===1;
+  }
+  enCours=true; majVoix(); garderEveil(true);
+  if(reprendre && moteur==="gemini" && reglages.cle && morceau && urlCourante && !audio.ended && audio.currentTime>0){
+    audio.playbackRate=reglages.vitesse||1;
+    const pr=audio.play(); if(pr) pr.catch(()=>{ pause(); });
+    return;
+  }
+  if(!reprendre){
+    const pg=pages[p];
+    if(pg && pg.t==="ch"){ const loc=endroit(p); lecture={ci:pg.c, b:loc.b||0, s:0}; }
+    else if(pg && (pg.t==="soon"||pg.t==="blank")){ lecture={ci:chapitres.length-1, b:0, s:0}; }
+    else lecture={ci:0, b:0, s:0};
+  }
+  if(synth) synth.cancel();
+  audio.pause();
+  if(reglages.cle){ moteur="gemini"; jouerMorceau(morceauDe(lecture.ci, lecture.b)); }
+  else { moteur="appareil"; if(!voixApp) choisirVoix(); if(!reprendre) lecture.s=0; parlerAppareil(); }
+}
+if(synth){
+  choisirVoix();
+  if("onvoiceschanged" in synth) synth.addEventListener("voiceschanged", choisirVoix);
+  synth.cancel();
+}
+majVoix();
+bVoix.addEventListener("click",()=>{ enCours ? pause() : lire(); });
+document.addEventListener("visibilitychange",()=>{ if(document.visibilityState==="visible" && enCours) garderEveil(true); });
+if("mediaSession" in navigator){
+  try{
+    navigator.mediaSession.setActionHandler("play",()=>{ if(!enCours) lire(); });
+    navigator.mediaSession.setActionHandler("pause",()=>{ if(enCours) pause(); });
+  }catch(e){}
+}
+
+/* -- réglages de la voix, dans le sommaire -- */
+function htmlReglages(){
+  const opts=VOIX_GEMINI.map(v=>`<option value="${v[0]}"${v[0]===reglages.voix?" selected":""}>${v[0]} · ${v[1]}</option>`).join("");
+  const vits=[0.85,0.9,1,1.1,1.2,1.3].map(x=>`<option value="${x}"${x===(+reglages.vitesse||1)?" selected":""}>${String(x).replace(".",",")}×</option>`).join("");
+  return `<h4 class="h4v">Voix</h4>
+  <p class="etat-voix">${reglages.cle?"Voix Gemini active.":"Voix de l'iPhone. Collez une clé Gemini pour une voix naturelle."}</p>
+  <label class="champ"><span>Clé Gemini</span><input id="r-cle" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="${reglages.cle?"•••• enregistrée":"AIza…"}"></label>
+  <label class="champ"><span>Voix</span><select id="r-voix">${opts}</select></label>
+  <label class="champ"><span>Vitesse</span><select id="r-vit">${vits}</select></label>
+  <div class="rangee"><button type="button" id="r-ok">Enregistrer</button><button type="button" id="r-test">Écouter un essai</button></div>
+  ${reglages.cle?'<button type="button" id="r-eff" class="discret">Retirer la clé (revenir à la voix de l\'iPhone)</button>':""}
+  <p class="note">La clé reste sur cet iPhone, nulle part ailleurs.</p>`;
+}
+function lireReglages(){
+  const c=$("r-cle"), v=$("r-voix"), s=$("r-vit");
+  if(c && c.value.trim()) reglages.cle=c.value.trim();
+  if(v) reglages.voix=v.value;
+  if(s) reglages.vitesse=+s.value||1;
+  sauverReglages();
+  audio.playbackRate=reglages.vitesse||1;
+}
+panneau.addEventListener("click",async e=>{
+  const b=e.target.closest("button"); if(!b) return;
+  if(b.id==="r-ok"){ lireReglages(); fermerPanneau(); toast(reglages.cle?"Voix Gemini enregistrée.":"Réglages enregistrés."); }
+  else if(b.id==="r-eff"){ reglages.cle=""; sauverReglages(); if(enCours) pause(); fermerPanneau(); toast("Clé retirée : voix de l'iPhone."); }
+  else if(b.id==="r-test"){
+    lireReglages();
+    if(!reglages.cle){ toast("Collez d'abord votre clé Gemini."); return; }
+    if(enCours) pause();
+    audioDebloque=false; deverrouillerAudio();
+    b.disabled=true; b.textContent="Préparation…";
+    try{
+      const blob=await appelGemini("Ils sortaient de la lumière comme on sort d'une gare. Tagomi murmura : « Mono no aware. »");
+      if(urlCourante) URL.revokeObjectURL(urlCourante);
+      urlCourante=URL.createObjectURL(blob); morceau=null;
+      audio.src=urlCourante; audio.playbackRate=reglages.vitesse||1; await audio.play();
+      toast("Ça marche : c'est la voix "+reglages.voix+".");
+    }catch(err){ toast("Essai impossible : "+(err.message||"erreur")+(err.status?" ("+err.status+")":""), 10000); }
+    b.disabled=false; b.textContent="Écouter un essai";
+  }
+});
+

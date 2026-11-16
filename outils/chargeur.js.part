@@ -1,0 +1,45 @@
+(function(){
+"use strict";
+const CLE_MDP="mdhc-s5-mdp";
+const b64=s=>Uint8Array.from(atob(s),c=>c.charCodeAt(0));
+let paquet=null;
+async function lirePaquet(){
+  if(!paquet){ const r=await fetch("livre.enc",{cache:"no-cache"}); if(!r.ok) throw new Error("livre introuvable"); paquet=await r.json(); }
+  return paquet;
+}
+async function ouvrir(mdp){
+  const j=await lirePaquet();
+  const k=await crypto.subtle.importKey("raw",new TextEncoder().encode(mdp),"PBKDF2",false,["deriveKey"]);
+  const cle=await crypto.subtle.deriveKey({name:"PBKDF2",salt:b64(j.salt),iterations:j.iter,hash:"SHA-256"},k,{name:"AES-GCM",length:256},false,["decrypt"]);
+  const clair=await crypto.subtle.decrypt({name:"AES-GCM",iv:b64(j.iv)},cle,b64(j.ct));
+  return JSON.parse(new TextDecoder().decode(clair));
+}
+function lancer(livre){
+  window.LIVRE.chapitres=livre.chapitres;
+  document.getElementById("verrou").hidden=true;
+  window.demarrerLivre();
+}
+async function essayer(mdp, silencieux){
+  try{
+    const livre=await ouvrir(mdp);
+    try{ localStorage.setItem(CLE_MDP, mdp); }catch(e){}
+    lancer(livre); return true;
+  }catch(e){
+    if(!silencieux){
+      const msg = (e && e.name==="OperationError") ? "Mot de passe incorrect." : "Impossible de charger le livre. Vérifiez la connexion.";
+      document.getElementById("mdp-err").textContent=msg;
+    }
+    return false;
+  }
+}
+document.getElementById("f-verrou").addEventListener("submit",e=>{
+  e.preventDefault();
+  const v=document.getElementById("mdp").value.trim();
+  if(v) essayer(v,false);
+});
+(async function(){
+  let m=null; try{ m=localStorage.getItem(CLE_MDP); }catch(e){}
+  if(!(m && await essayer(m,true))){ document.getElementById("verrou").hidden=false; }
+})();
+if("serviceWorker" in navigator){ window.addEventListener("load",()=>{ navigator.serviceWorker.register("sw.js").catch(()=>{}); }); }
+})();
