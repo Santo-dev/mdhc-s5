@@ -12,7 +12,7 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icone-180.png">
 <link rel="icon" href="icone-192.png">
-<script>(function(){function maj(){var st=navigator.standalone||(window.matchMedia&&matchMedia("(display-mode: standalone)").matches),m=0;if(st){var g=Math.max(screen.width,screen.height),c=Math.min(screen.width,screen.height),H=innerWidth>innerHeight?c:g;m=Math.max(0,H-innerHeight);if(m>140)m=0;}document.documentElement.style.setProperty("--manque",m+"px");}maj();addEventListener("resize",maj);addEventListener("orientationchange",function(){setTimeout(maj,350);});})();</script>
+<script>(function(){var d=document.documentElement;function maj(){var st=navigator.standalone||(window.matchMedia&&matchMedia("(display-mode: standalone)").matches),h=window.innerHeight;if(st){var g=Math.max(screen.width,screen.height),c=Math.min(screen.width,screen.height),H=innerWidth>innerHeight?c:g;if(H>h&&H-h<170)h=H;}d.style.setProperty("--H",h+"px");}maj();addEventListener("resize",maj);addEventListener("orientationchange",function(){setTimeout(function(){maj();dispatchEvent(new Event("resize"));},400);});document.addEventListener("focusout",function(e){if(!e.target||!/^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName))return;setTimeout(function(){var b=document.body;b.style.display="none";void b.offsetHeight;b.style.display="";maj();dispatchEvent(new Event("resize"));},160);});})();</script>
 <title>Le Maître du Haut-Château, saison 5</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -36,7 +36,8 @@
   --padx:30px; --padt:40px; --padb:40px; --fs:18px; --lh:26px; --u:3.2px;
 }
 *{box-sizing:border-box}
-html,body{height:100%;margin:0}
+html{height:100%;margin:0;overflow:hidden;background:#151312}
+body{position:relative;margin:0;height:var(--H,100%);min-height:100%;overflow:hidden}
 body{
   background:
     radial-gradient(110% 80% at 14% -12%, rgba(228,170,92,.30), transparent 58%),
@@ -51,7 +52,7 @@ body{
 }
 
 /* ---------- décor ---------- */
-#decor{position:fixed;inset:0;overflow:hidden;pointer-events:none}
+#decor{position:absolute;inset:0;overflow:hidden;pointer-events:none}
 .pellicule{
   position:absolute;left:-30vmax;top:9%;width:180vmax;height:78px;
   transform:rotate(-13deg);
@@ -78,7 +79,7 @@ body{
 .vignette{position:absolute;inset:0;background:radial-gradient(120% 100% at 50% 45%, transparent 55%, rgba(0,0,0,.62) 100%)}
 
 /* ---------- scène et livre ---------- */
-#scene{position:fixed;inset:0;top:env(safe-area-inset-top);overflow:hidden;touch-action:pan-y pinch-zoom;cursor:pointer}
+#scene{position:absolute;inset:0;top:env(safe-area-inset-top);overflow:hidden;touch-action:pan-y pinch-zoom;cursor:pointer}
 #livre{
   position:absolute;width:calc(var(--pw)*2);height:var(--ph);
   perspective:2600px;perspective-origin:50% 50%;
@@ -246,7 +247,7 @@ body{
 
 /* ---------- barre ---------- */
 #barre{
-  position:fixed;left:0;right:0;bottom:0;height:calc(50px + env(safe-area-inset-bottom));padding-bottom:env(safe-area-inset-bottom)!important;z-index:20;
+  position:absolute;left:0;right:0;bottom:0;height:calc(50px + env(safe-area-inset-bottom));padding-bottom:env(safe-area-inset-bottom)!important;z-index:20;
   display:flex;align-items:center;justify-content:center;gap:8px;padding:0 10px;
   font:400 12px/1 var(--f-machine);letter-spacing:.08em;color:rgba(235,226,205,.82);
   background:linear-gradient(0deg,rgba(0,0,0,.55),transparent);
@@ -262,7 +263,7 @@ body{
 #ou{flex:0 1 250px;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-transform:uppercase;font-variant-numeric:tabular-nums}
 #barre .sep{flex:0 0 6px}
 #panneau{
-  position:fixed;left:50%;bottom:calc(58px + env(safe-area-inset-bottom) - var(--manque,0px));max-height:calc(100vh - 90px - env(safe-area-inset-bottom) - env(safe-area-inset-top));overflow:auto;transform:translateX(-50%);z-index:30;
+  position:absolute;left:50%;bottom:calc(58px + env(safe-area-inset-bottom));max-height:calc(100vh - 90px - env(safe-area-inset-bottom) - env(safe-area-inset-top));overflow:auto;transform:translateX(-50%);z-index:30;
   width:min(360px,calc(100vw - 24px));padding:14px;display:none;
   background:rgba(22,20,18,.94);border:1px solid rgba(185,151,91,.5);border-radius:4px;
   font:400 13px/1.3 var(--f-machine);color:var(--papier);
@@ -280,12 +281,9 @@ body{
 #b-voix svg{width:12px;height:12px;display:block;margin:auto;fill:currentColor}
 #b-voix.joue{border-color:var(--laiton);color:#fff;background:rgba(138,28,24,.82)}
 .flux > p.lu,.flux > .bloc.lu > *,.flux > .ouverture.lu h2{background:rgba(185,151,91,.26);border-radius:2px;transition:background .3s}
-html{background:#151312}
-#decor,#scene,#verrou{bottom:calc(-1 * var(--manque,0px))}
-#barre{bottom:calc(-1 * var(--manque,0px))!important}
 #b-voix.charge svg{animation:souffle 1s ease-in-out infinite}
 @keyframes souffle{50%{opacity:.25}}
-#toast{position:fixed;left:50%;bottom:calc(60px + env(safe-area-inset-bottom) - var(--manque,0px));transform:translate(-50%,8px);z-index:40;
+#toast{position:absolute;left:50%;bottom:calc(60px + env(safe-area-inset-bottom));transform:translate(-50%,8px);z-index:40;
   width:max-content;max-width:calc(100vw - 32px);padding:10px 14px;border-radius:4px;opacity:0;pointer-events:none;
   background:rgba(22,20,18,.95);border:1px solid rgba(185,151,91,.5);color:var(--papier);
   font:400 13px/1.35 var(--f-machine);transition:opacity .25s, transform .25s;
@@ -301,7 +299,7 @@ html{background:#151312}
 #panneau .rangee{display:flex;gap:8px}
 #panneau .rangee button{justify-content:center}
 #panneau button.discret{justify-content:center;opacity:.8;font-size:12px}
-#verrou{position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;padding:24px;
+#verrou{position:absolute;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;padding:24px;
   background:radial-gradient(95% 75% at 50% 46%, #2b2622 0%, #151312 68%, #090808 100%)}
 #verrou[hidden]{display:none}
 #verrou form{width:min(340px,100%);text-align:center;color:var(--papier)}

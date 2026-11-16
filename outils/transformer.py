@@ -20,26 +20,26 @@ rep('<meta name="viewport" content="width=device-width, initial-scale=1, maximum
     '<link rel="manifest" href="manifest.webmanifest">\n'
     '<link rel="apple-touch-icon" href="icone-180.png">\n'
     '<link rel="icon" href="icone-192.png">\n'
-    '<script>(function(){function maj(){var st=navigator.standalone||(window.matchMedia&&matchMedia("(display-mode: standalone)").matches),m=0;'
-    'if(st){var g=Math.max(screen.width,screen.height),c=Math.min(screen.width,screen.height),H=innerWidth>innerHeight?c:g;m=Math.max(0,H-innerHeight);if(m>140)m=0;}'
-    'document.documentElement.style.setProperty("--manque",m+"px");}maj();addEventListener("resize",maj);'
-    'addEventListener("orientationchange",function(){setTimeout(maj,350);});})();</script>')
+    '<script>(function(){var d=document.documentElement;function maj(){var st=navigator.standalone||(window.matchMedia&&matchMedia("(display-mode: standalone)").matches),h=window.innerHeight;'
+    'if(st){var g=Math.max(screen.width,screen.height),c=Math.min(screen.width,screen.height),H=innerWidth>innerHeight?c:g;if(H>h&&H-h<170)h=H;}'
+    'd.style.setProperty("--H",h+"px");}maj();addEventListener("resize",maj);'
+    'addEventListener("orientationchange",function(){setTimeout(function(){maj();dispatchEvent(new Event("resize"));},400);});'
+    'document.addEventListener("focusout",function(e){if(!e.target||!/^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName))return;'
+    'setTimeout(function(){var b=document.body;b.style.display="none";void b.offsetHeight;b.style.display="";maj();dispatchEvent(new Event("resize"));},160);});'
+    '})();</script>')
 
 # safe areas (notch, home indicator)
 rep('#scene{position:fixed;inset:0;', '#scene{position:fixed;inset:0;top:env(safe-area-inset-top);')
 rep('position:fixed;left:0;right:0;bottom:0;height:50px;z-index:20;',
     'position:fixed;left:0;right:0;bottom:0;height:calc(50px + env(safe-area-inset-bottom));padding-bottom:env(safe-area-inset-bottom)!important;z-index:20;')
-rep('position:fixed;left:50%;bottom:58px;', 'position:fixed;left:50%;bottom:calc(58px + env(safe-area-inset-bottom) - var(--manque,0px));max-height:calc(100vh - 90px - env(safe-area-inset-bottom) - env(safe-area-inset-top));overflow:auto;')
+rep('position:fixed;left:50%;bottom:58px;', 'position:fixed;left:50%;bottom:calc(58px + env(safe-area-inset-bottom));max-height:calc(100vh - 90px - env(safe-area-inset-bottom) - env(safe-area-inset-top));overflow:auto;')
 rep('const vw=scene.clientWidth, vh=scene.clientHeight, barre=50;',
     'const vw=scene.clientWidth, vh=scene.clientHeight, barre=($("barre").offsetHeight||50);')
 
 # extra styles
-rep('</style>', '''html{background:#151312}
-#decor,#scene,#verrou{bottom:calc(-1 * var(--manque,0px))}
-#barre{bottom:calc(-1 * var(--manque,0px))!important}
-#b-voix.charge svg{animation:souffle 1s ease-in-out infinite}
+rep('</style>', '''#b-voix.charge svg{animation:souffle 1s ease-in-out infinite}
 @keyframes souffle{50%{opacity:.25}}
-#toast{position:fixed;left:50%;bottom:calc(60px + env(safe-area-inset-bottom) - var(--manque,0px));transform:translate(-50%,8px);z-index:40;
+#toast{position:fixed;left:50%;bottom:calc(60px + env(safe-area-inset-bottom));transform:translate(-50%,8px);z-index:40;
   width:max-content;max-width:calc(100vw - 32px);padding:10px 14px;border-radius:4px;opacity:0;pointer-events:none;
   background:rgba(22,20,18,.95);border:1px solid rgba(185,151,91,.5);color:var(--papier);
   font:400 13px/1.35 var(--f-machine);transition:opacity .25s, transform .25s;
@@ -68,6 +68,14 @@ rep('</style>', '''html{background:#151312}
   color:var(--papier);background:var(--sang);border:0;border-radius:3px}
 #verrou .err{min-height:18px;margin-top:10px;font:400 12px/1.4 var(--f-machine);color:#e28b84}
 </style>''')
+
+rep('html,body{height:100%;margin:0}', 'html{height:100%;margin:0;overflow:hidden;background:#151312}\nbody{position:relative;margin:0;height:var(--H,100%);min-height:100%;overflow:hidden}')
+rep('#decor{position:fixed;', '#decor{position:absolute;')
+rep('#scene{position:fixed;', '#scene{position:absolute;')
+rep('position:fixed;left:0;right:0;bottom:0;height:calc(50px', 'position:absolute;left:0;right:0;bottom:0;height:calc(50px')
+rep('position:fixed;left:50%;bottom:calc(58px', 'position:absolute;left:50%;bottom:calc(58px')
+rep('#toast{position:fixed;', '#toast{position:absolute;')
+rep('#verrou{position:fixed;', '#verrou{position:absolute;')
 
 # toast + lock screen elements
 rep('<script>window.LIVRE={chapitres:[]};</script>\n<script src="chapitres/01.js"></script>',
