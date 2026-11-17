@@ -790,6 +790,7 @@ function parlerAppareil(){
   if(!lecture){ finLecture(); return; }
   const phrases=decouper(textes(lecture.ci)[lecture.b]);
   if(lecture.s>=phrases.length){ lecture.b++; lecture.s=0; parlerAppareil(); return; }
+  if(lecture.s===0){ const e=morceauEnreg(lecture.ci, lecture.b); if(e && e.b0===lecture.b){ moteur="audio"; jouerMorceau(e); return; } }
   suivreParagraphe();
   const u=new SpeechSynthesisUtterance(phrases[lecture.s]);
   u.lang = voixApp ? voixApp.lang : "fr-FR";
@@ -825,11 +826,12 @@ function cleM(m){ return m.f ? "f|"+m.f : reglages.voix+"|"+chapitres[m.ci].n+"|
 
 /* -- audio enregistré une fois pour toutes (généré sur GitHub, chiffré) -- */
 let indexAudio=null, cleAudioP=null;
+const perimes=new Set();
 fetch("audio/index.json",{cache:"no-cache"}).then(r=>r.ok?r.json():null).then(j=>{ indexAudio=j; }).catch(()=>{});
 function morceauEnreg(ci,b){
   const c=indexAudio && indexAudio.chapitres && indexAudio.chapitres[String(chapitres[ci].n)];
   if(!c || !c.morceaux) return null;
-  for(const x of c.morceaux) if(b>=x[0] && b<=x[1]) return {ci,b0:x[0],b1:x[1],f:x[2]};
+  for(const x of c.morceaux) if(b>=x[0] && b<=x[1] && x[1]<textes(ci).length && !perimes.has(x[2]+"|"+x[0])) return {ci,b0:x[0],b1:x[1],f:x[2],h:x[3]||""};
   return null;
 }
 function morceauA(ci,b){
@@ -846,6 +848,13 @@ function cleAudio(){
     cleAudioP.catch(()=>{ cleAudioP=null; });
   }
   return cleAudioP;
+}
+const verifs=new Map();
+function empreinte(m){
+  const k=m.f+"|"+m.b0+"-"+m.b1;
+  if(!verifs.has(k)) verifs.set(k, crypto.subtle.digest("SHA-256", new TextEncoder().encode(texteM(m))).then(d=>
+    Array.from(new Uint8Array(d)).map(x=>x.toString(16).padStart(2,"0")).join("").slice(0,20)));
+  return verifs.get(k);
 }
 async function lireEnreg(f){
   const r=await fetch(f);
@@ -934,7 +943,10 @@ function obtenir(m){
   const k=cleM(m);
   if(enVol.has(k)) return enVol.get(k);
   const pr=(async()=>{
-    if(m.f) return lireEnreg(m.f);
+    if(m.f){
+      if(!m.h || (await empreinte(m))!==m.h){ const e=new Error("passage modifié depuis l'enregistrement"); e.perime=true; throw e; }
+      return lireEnreg(m.f);
+    }
     const c=await idbGet(k); if(c) return c;
     const b=await appelGemini(texteM(m)); idbPut(k,b); return b;
   })();
@@ -956,7 +968,16 @@ async function jouerMorceau(m, debutB){
   chargement(true);
   let blob;
   try{ blob=await obtenir(m); }
-  catch(e){ if(g!==gen) return; chargement(false); echecGemini(e, m); return; }
+  catch(e){
+    if(g!==gen) return; chargement(false);
+    if(e && e.perime){
+      perimes.add(m.f+"|"+m.b0);
+      if(reglages.cle){ jouerMorceau(morceauDe(m.ci, db)); return; }
+      toast("Ce passage a été modifié : son nouvel enregistrement est en préparation. Voix de l'iPhone en attendant.", 8000);
+      moteur="appareil"; lecture={ci:m.ci,b:db,s:0}; if(!voixApp) choisirVoix(); parlerAppareil(); return;
+    }
+    echecGemini(e, m); return;
+  }
   if(g!==gen || !enCours) return;
   chargement(false);
   if(urlCourante) URL.revokeObjectURL(urlCourante);

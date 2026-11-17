@@ -1,6 +1,9 @@
 name: Enregistrer le livre audio
 
 on:
+  push:
+    branches: [main]
+    paths: [livre.enc]
   workflow_dispatch:
     inputs:
       chapitres:
@@ -8,13 +11,13 @@ on:
         required: false
         default: ""
       voix:
-        description: "Voix Gemini"
+        description: "Voix Gemini (vide = garder la voix actuelle, Charon au départ)"
         required: false
-        default: "Charon"
+        default: ""
       modele:
-        description: "Modèle (gemini-3.8-flash-tts ou gemini-3.8-flash-lite-tts)"
+        description: "Modèle (vide = garder le modèle actuel ; gemini-3.8-flash-tts ou gemini-3.8-flash-lite-tts)"
         required: false
-        default: "gemini-3.8-flash-tts"
+        default: ""
 
 permissions:
   contents: write
@@ -50,7 +53,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add audio
+          git add -A audio
           git diff --cached --quiet && exit 0
           git commit -m "Livre audio : enregistrement"
           for i in 1 2 3; do git pull --rebase -q && git push -q && exit 0; sleep 5; done

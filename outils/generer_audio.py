@@ -8,7 +8,8 @@ skipped, so the job can stop (quota, timeout) and resume later.
 Env: GEMINI_API_KEY, LIVRE_MDP, VOIX (default Charon), MODELE (default gemini-3.8-flash-tts),
      CHAPITRES ("" = all, or "1,2"), FAUX=1 (offline test: sine wave instead of Gemini).
 """
-import base64, json, os, re, subprocess, sys, time, math, struct, pathlib
+import base64, json, os, re, subprocess, sys, time, math, struct, pathlib, hashlib
+from collections import defaultdict
 import requests
 from bs4 import BeautifulSoup, Tag
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
@@ -18,8 +19,8 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 RACINE = pathlib.Path(os.environ.get("RACINE", "."))
 STYLE = "calm, expressive audiobook narration with natural pauses; Japanese and German words pronounced in their own language"
 LIMITE = 1400
-VOIX = os.environ.get("VOIX") or "Charon"
-MODELE = os.environ.get("MODELE") or "gemini-3.8-flash-tts"
+VOIX = os.environ.get("VOIX") or ""      # empty = keep the voice already used for the book
+MODELE = os.environ.get("MODELE") or ""
 FAUX = os.environ.get("FAUX") == "1"
 CLE_API = os.environ.get("GEMINI_API_KEY", "")
 MDP = os.environ["LIVRE_MDP"]
@@ -148,59 +149,116 @@ def aac(pcm, rate):
 
 
 # ---------- main ----------
+def h(x):
+    return hashlib.sha256(x.encode("utf-8")).hexdigest()[:20]
+
+
 dossier = RACINE / "audio"
 dossier.mkdir(exist_ok=True)
 fi = dossier / "index.json"
 index = json.loads(fi.read_text()) if fi.exists() else {}
 if "salt" not in index:
-    index = {"v": 1, "iter": 310000, "salt": base64.b64encode(os.urandom(16)).decode(), "chapitres": {}}
+    index = {"v": 2, "iter": 310000, "salt": base64.b64encode(os.urandom(16)).decode(), "chapitres": {}}
+index["v"] = 2
+anciens = [e for e in index["chapitres"].values() if e.get("voix")]
+VOIX = VOIX or (anciens[0]["voix"] if anciens else "Charon")
+MODELE = MODELE or (anciens[0].get("modele") if anciens else "") or "gemini-3.8-flash-tts"
 cle = AESGCM(derive(b(index["salt"]), index["iter"]))
 
+
+def ecrire_index():
+    fi.write_text(json.dumps(index, ensure_ascii=False))
+
+
+def plan(t, ph, vieux):
+    """Cut the chapter into pieces, reusing every old piece whose paragraphs are unchanged.
+    Old pieces are found by content (paragraph hashes), so an edit only costs the pieces it touches."""
+    cands = defaultdict(list)
+    for m in vieux:
+        if len(m) >= 5 and m[4] and (RACINE / m[2]).exists():
+            cands[m[4][0]].append(m)
+
+    def trouve(i):
+        for m in cands.get(ph[i], []):
+            if ph[i:i + len(m[4])] == m[4]:
+                return m
+        return None
+
+    res, i = [], 0
+    while i < len(t):
+        m = trouve(i)
+        if m:
+            res.append((i, i + len(m[4]) - 1, m))
+            i += len(m[4])
+            continue
+        j, n = i, len(t[i])
+        while j + 1 < len(t) and n + len(t[j + 1]) + 2 <= LIMITE and not trouve(j + 1):
+            j += 1
+            n += len(t[j]) + 2
+        res.append((i, j, None))
+        i = j + 1
+    return res
+
+
 voulus = {int(x) for x in os.environ.get("CHAPITRES", "").replace(" ", "").split(",") if x}
-arret = None
-faits = 0
+presents = {str(c["n"]) for c in chapitres}
+for n in list(index["chapitres"]):
+    if n not in presents:
+        del index["chapitres"][n]
+arret, faits, repris = None, 0, 0
 for c in chapitres:
     if voulus and c["n"] not in voulus:
         continue
     t = textes(c)
-    ms = morceaux(t)
+    ph = [h(x) for x in t]
     nn = "%02d" % c["n"]
-    ent = index["chapitres"].get(str(c["n"]))
-    if not ent or ent.get("voix") != VOIX or ent.get("modele") != MODELE or [m[:2] for m in ent["morceaux"]] != [list(x) for x in ms][:len(ent["morceaux"])]:
-        ent = {"voix": VOIX, "modele": MODELE, "total": len(ms), "complet": False, "morceaux": []}
-    ent["total"] = len(ms)
-    deja = {tuple(m[:2]) for m in ent["morceaux"]}
     (dossier / nn).mkdir(exist_ok=True)
-    for k, (b0, b1) in enumerate(ms):
-        if (b0, b1) in deja and (RACINE / ent["morceaux"][k][2]).exists():
+    ent = index["chapitres"].get(str(c["n"])) or {}
+    vieux = ent.get("morceaux", []) if ent.get("voix") == VOIX and ent.get("modele") == MODELE else []
+    pl = plan(t, ph, vieux)
+    garde = [[b0, b1, m[2], m[3], ph[b0:b1 + 1]] for b0, b1, m in pl if m]
+    repris += len(garde)
+    ent = {"voix": VOIX, "modele": MODELE, "total": len(pl), "complet": False, "texte": h("\n\n".join(t)), "morceaux": garde}
+    index["chapitres"][str(c["n"])] = ent
+    ecrire_index()
+    for k, (b0, b1, m) in enumerate(pl):
+        if m:
             continue
         if time.time() - t0 > DUREE_MAX:
             arret = "temps écoulé"
             break
         texte = "\n\n".join(t[b0:b1 + 1])
-        try:
-            pcm, rate = gemini(texte)
-        except Quota as e:
-            arret = "quota Gemini: " + str(e)[:200]
-            break
-        f = "audio/%s/%03d.bin" % (nn, k)
-        iv = os.urandom(12)
-        (RACINE / f).write_bytes(iv + cle.encrypt(iv, aac(pcm, rate), None))
-        ent["morceaux"] = [m for m in ent["morceaux"] if tuple(m[:2]) != (b0, b1)] + [[b0, b1, f]]
-        ent["morceaux"].sort(key=lambda m: m[0])
-        index["chapitres"][str(c["n"])] = ent
-        fi.write_text(json.dumps(index, ensure_ascii=False))
-        faits += 1
-        print("chapitre %d : morceau %d/%d" % (c["n"], k + 1, len(ms)), flush=True)
-        if not FAUX:
-            time.sleep(3)
-    ent["complet"] = len(ent["morceaux"]) == len(ms)
-    index["chapitres"][str(c["n"])] = ent
-    fi.write_text(json.dumps(index, ensure_ascii=False))
+        th = h(texte)
+        f = "audio/%s/%s.bin" % (nn, th)
+        if not (RACINE / f).exists():
+            try:
+                pcm, rate = gemini(texte)
+            except Quota as e:
+                arret = "quota Gemini: " + str(e)[:200]
+                break
+            iv = os.urandom(12)
+            (RACINE / f).write_bytes(iv + cle.encrypt(iv, aac(pcm, rate), None))
+            faits += 1
+            if not FAUX:
+                time.sleep(3)
+        ent["morceaux"].append([b0, b1, f, th, ph[b0:b1 + 1]])
+        ent["morceaux"].sort(key=lambda x: x[0])
+        ecrire_index()
+        print("chapitre %d : morceau %d/%d" % (c["n"], k + 1, len(pl)), flush=True)
+    ent["complet"] = len(ent["morceaux"]) == len(pl)
+    ecrire_index()
     if arret:
         break
 
-print("morceaux enregistrés cette fois :", faits)
+# files no longer used by any version of the text
+utiles = {m[2] for e in index["chapitres"].values() for m in e["morceaux"]}
+suppr = 0
+for f in dossier.glob("*/*.bin"):
+    if str(f.relative_to(RACINE)) not in utiles:
+        f.unlink()
+        suppr += 1
+
+print("morceaux réutilisés : %d, enregistrés cette fois : %d, fichiers périmés supprimés : %d" % (repris, faits, suppr))
 for n, e in sorted(index["chapitres"].items(), key=lambda x: int(x[0])):
     print("chapitre %s : %d/%d %s" % (n, len(e["morceaux"]), e["total"], "complet" if e["complet"] else ""))
 if arret:
