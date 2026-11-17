@@ -122,13 +122,45 @@ function morceauDe(ci,b){
   while(b1+1<t.length && n+t[b1+1].length+2<=1400){ b1++; n+=t[b1].length+2; }
   return {ci,b0:b,b1};
 }
-function suivantDe(m){
-  if(!m) return null;
-  if(m.b1+1<textes(m.ci).length) return morceauDe(m.ci,m.b1+1);
-  if(m.ci+1<chapitres.length) return morceauDe(m.ci+1,0);
+function apres(ci,b){
+  if(b+1<textes(ci).length) return {ci,b:b+1};
+  if(ci+1<chapitres.length) return {ci:ci+1,b:0};
   return null;
 }
-function cleM(m){ return reglages.voix+"|"+chapitres[m.ci].n+"|"+m.b0+"-"+m.b1; }
+function suivantDe(m){ if(!m) return null; const n=apres(m.ci,m.b1); return n?morceauA(n.ci,n.b):null; }
+function cleM(m){ return m.f ? "f|"+m.f : reglages.voix+"|"+chapitres[m.ci].n+"|"+m.b0+"-"+m.b1; }
+
+/* -- audio enregistré une fois pour toutes (généré sur GitHub, chiffré) -- */
+let indexAudio=null, cleAudioP=null;
+fetch("audio/index.json",{cache:"no-cache"}).then(r=>r.ok?r.json():null).then(j=>{ indexAudio=j; }).catch(()=>{});
+function morceauEnreg(ci,b){
+  const c=indexAudio && indexAudio.chapitres && indexAudio.chapitres[String(chapitres[ci].n)];
+  if(!c || !c.morceaux) return null;
+  for(const x of c.morceaux) if(b>=x[0] && b<=x[1]) return {ci,b0:x[0],b1:x[1],f:x[2]};
+  return null;
+}
+function morceauA(ci,b){
+  const e=morceauEnreg(ci,b); if(e) return e;
+  return reglages.cle ? morceauDe(ci,b) : null;
+}
+function cleAudio(){
+  if(!cleAudioP){
+    cleAudioP=(async()=>{
+      const b64=s=>Uint8Array.from(atob(s),c=>c.charCodeAt(0));
+      const k=await crypto.subtle.importKey("raw",new TextEncoder().encode(window.MDP_LIVRE||""),"PBKDF2",false,["deriveKey"]);
+      return crypto.subtle.deriveKey({name:"PBKDF2",salt:b64(indexAudio.salt),iterations:indexAudio.iter,hash:"SHA-256"},k,{name:"AES-GCM",length:256},false,["decrypt"]);
+    })();
+    cleAudioP.catch(()=>{ cleAudioP=null; });
+  }
+  return cleAudioP;
+}
+async function lireEnreg(f){
+  const r=await fetch(f);
+  if(!r.ok) throw erreurDe(r.status,"fichier audio introuvable");
+  const u=new Uint8Array(await r.arrayBuffer());
+  const clair=await crypto.subtle.decrypt({name:"AES-GCM",iv:u.slice(0,12)},await cleAudio(),u.slice(12));
+  return new Blob([clair],{type:"audio/mp4"});
+}
 function texteM(m){ return textes(m.ci).slice(m.b0,m.b1+1).join("\n\n"); }
 
 let dbp=null;
@@ -209,6 +241,7 @@ function obtenir(m){
   const k=cleM(m);
   if(enVol.has(k)) return enVol.get(k);
   const pr=(async()=>{
+    if(m.f) return lireEnreg(m.f);
     const c=await idbGet(k); if(c) return c;
     const b=await appelGemini(texteM(m)); idbPut(k,b); return b;
   })();
@@ -222,27 +255,35 @@ function deverrouillerAudio(){
   try{ audio.src=URL.createObjectURL(enWav(new Uint8Array(4800),24000)); const pr=audio.play(); if(pr) pr.catch(()=>{}); }catch(e){}
   if(synth){ try{ const u=new SpeechSynthesisUtterance(" "); u.volume=0; synth.speak(u); }catch(e){} }
 }
-async function jouerMorceau(m){
+async function jouerMorceau(m, debutB){
   const g=++gen;
-  morceau=m; lecture={ci:m.ci,b:m.b0,s:0};
+  const db=(debutB!=null && debutB>m.b0 && debutB<=m.b1) ? debutB : m.b0;
+  morceau=m; lecture={ci:m.ci,b:db,s:0};
   suivreParagraphe();
   chargement(true);
   let blob;
   try{ blob=await obtenir(m); }
-  catch(e){ if(g!==gen) return; chargement(false); echecGemini(e); return; }
+  catch(e){ if(g!==gen) return; chargement(false); echecGemini(e, m); return; }
   if(g!==gen || !enCours) return;
   chargement(false);
   if(urlCourante) URL.revokeObjectURL(urlCourante);
   urlCourante=URL.createObjectURL(blob);
   audio.src=urlCourante; audio.playbackRate=reglages.vitesse||1;
+  if(db>m.b0){
+    const t=textes(m.ci); let tot=0, av=0;
+    for(let i=m.b0;i<=m.b1;i++){ const l=t[i].length+2; if(i<db) av+=l; tot+=l; }
+    const aller_=()=>{ try{ audio.currentTime=av/tot*audio.duration; }catch(e){} };
+    if(isFinite(audio.duration) && audio.duration) aller_(); else audio.addEventListener("loadedmetadata", aller_, {once:true});
+  }
   try{ await audio.play(); }
   catch(e){ if(g!==gen) return; pause(); toast("Touchez ▶ pour reprendre la lecture."); return; }
   const s=suivantDe(m);
   if(s) obtenir(s).then(()=>{ const s2=suivantDe(s); if(s2 && enCours) obtenir(s2).catch(()=>{}); }).catch(()=>{});
 }
-function echecGemini(e){
+function echecGemini(e, m){
   const st=e&&e.status;
-  if(st===429) toast("Limite gratuite de Gemini atteinte pour l'instant : je continue avec la voix de l'iPhone.", 7000);
+  if(m && m.f) toast("Audio enregistré illisible ("+((e&&e.message)||"erreur")+"). Je continue avec la voix de l'iPhone.", 8000);
+  else if(st===429) toast("Limite gratuite de Gemini atteinte pour l'instant : je continue avec la voix de l'iPhone.", 7000);
   else if(st===400||st===401||st===403) toast("Gemini refuse la clé ("+e.message+"). Je continue avec la voix de l'iPhone.", 9000);
   else toast("Gemini ne répond pas ("+((e&&e.message)||"erreur")+"). Je continue avec la voix de l'iPhone.", 9000);
   moteur="appareil"; if(lecture) lecture.s=0;
@@ -250,7 +291,7 @@ function echecGemini(e){
   parlerAppareil();
 }
 audio.addEventListener("timeupdate",()=>{
-  if(!enCours || moteur!=="gemini" || !morceau || !lecture || !isFinite(audio.duration) || !audio.duration) return;
+  if(!enCours || moteur!=="audio" || !morceau || !lecture || !isFinite(audio.duration) || !audio.duration) return;
   const t=textes(morceau.ci); let tot=0;
   for(let i=morceau.b0;i<=morceau.b1;i++) tot+=t[i].length+2;
   const cible=audio.currentTime/audio.duration*tot; let acc=0, b=morceau.b1;
@@ -258,9 +299,15 @@ audio.addEventListener("timeupdate",()=>{
   if(b!==lecture.b){ lecture.b=b; suivreParagraphe(); etat.loc=endroit(p); memoriser(); }
 });
 audio.addEventListener("ended",()=>{
-  if(!enCours || moteur!=="gemini" || !morceau) return;
+  if(!enCours || moteur!=="audio" || !morceau) return;
   const s=suivantDe(morceau);
-  if(s) jouerMorceau(s); else finLecture();
+  if(s){ jouerMorceau(s); return; }
+  const n=apres(morceau.ci, morceau.b1);
+  if(!n){ finLecture(); return; }
+  moteur="appareil"; lecture={ci:n.ci,b:n.b,s:0};
+  if(!voixApp) choisirVoix();
+  toast("Ce passage n'est pas encore enregistré : voix de l'iPhone.", 6000);
+  parlerAppareil();
 });
 
 /* -- commandes -- */
@@ -279,7 +326,7 @@ function lire(){
     reprendre = d===0 || d===1;
   }
   enCours=true; majVoix(); garderEveil(true);
-  if(reprendre && moteur==="gemini" && reglages.cle && morceau && urlCourante && !audio.ended && audio.currentTime>0){
+  if(reprendre && moteur==="audio" && morceau && urlCourante && !audio.ended && audio.currentTime>0){
     audio.playbackRate=reglages.vitesse||1;
     const pr=audio.play(); if(pr) pr.catch(()=>{ pause(); });
     return;
@@ -292,7 +339,8 @@ function lire(){
   }
   if(synth) synth.cancel();
   audio.pause();
-  if(reglages.cle){ moteur="gemini"; jouerMorceau(morceauDe(lecture.ci, lecture.b)); }
+  const m=morceauA(lecture.ci, lecture.b);
+  if(m){ moteur="audio"; jouerMorceau(m, lecture.b); }
   else { moteur="appareil"; if(!voixApp) choisirVoix(); if(!reprendre) lecture.s=0; parlerAppareil(); }
 }
 if(synth){
@@ -311,11 +359,20 @@ if("mediaSession" in navigator){
 }
 
 /* -- réglages de la voix, dans le sommaire -- */
+function chapitresEnreg(){
+  const c=(indexAudio&&indexAudio.chapitres)||{};
+  const ok=Object.keys(c).filter(k=>c[k].complet).map(Number).sort((a,b)=>a-b);
+  const enCoursG=Object.keys(c).filter(k=>!c[k].complet).map(Number);
+  let t="";
+  if(ok.length) t+="Enregistré une fois pour toutes : chapitre"+(ok.length>1?"s ":" ")+ok.join(", ")+" (voix "+((c[ok[0]]&&c[ok[0]].voix)||"Gemini")+"). ";
+  if(enCoursG.length) t+="En cours d'enregistrement : chapitre"+(enCoursG.length>1?"s ":" ")+enCoursG.join(", ")+". ";
+  return t;
+}
 function htmlReglages(){
   const opts=VOIX_GEMINI.map(v=>`<option value="${v[0]}"${v[0]===reglages.voix?" selected":""}>${v[0]} · ${v[1]}</option>`).join("");
   const vits=[0.85,0.9,1,1.1,1.2,1.3].map(x=>`<option value="${x}"${x===(+reglages.vitesse||1)?" selected":""}>${String(x).replace(".",",")}×</option>`).join("");
   return `<h4 class="h4v">Voix</h4>
-  <p class="etat-voix">${reglages.cle?"Voix Gemini active.":"Voix de l'iPhone. Collez une clé Gemini pour une voix naturelle."}</p>
+  <p class="etat-voix">${chapitresEnreg()}${reglages.cle?"Voix Gemini en direct active pour le reste.":"Ailleurs : voix de l'iPhone (ou collez une clé Gemini)."}</p>
   <label class="champ"><span>Clé Gemini</span><input id="r-cle" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="${reglages.cle?"•••• enregistrée":"AIza…"}"></label>
   <label class="champ"><span>Voix</span><select id="r-voix">${opts}</select></label>
   <label class="champ"><span>Vitesse</span><select id="r-vit">${vits}</select></label>

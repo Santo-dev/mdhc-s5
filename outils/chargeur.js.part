@@ -22,6 +22,7 @@ function lancer(livre){
 async function essayer(mdp, silencieux){
   try{
     const livre=await ouvrir(mdp);
+    window.MDP_LIVRE=mdp;
     try{ localStorage.setItem(CLE_MDP, mdp); }catch(e){}
     lancer(livre); return true;
   }catch(e){

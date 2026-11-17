@@ -1,0 +1,57 @@
+name: Enregistrer le livre audio
+
+on:
+  workflow_dispatch:
+    inputs:
+      chapitres:
+        description: "Chapitres à enregistrer (vide = tous), ex. 1,2"
+        required: false
+        default: ""
+      voix:
+        description: "Voix Gemini"
+        required: false
+        default: "Charon"
+      modele:
+        description: "Modèle (gemini-3.8-flash-tts ou gemini-3.8-flash-lite-tts)"
+        required: false
+        default: "gemini-3.8-flash-tts"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: audio
+  cancel-in-progress: false
+
+jobs:
+  enregistrer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Outils
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+          pip install -q requests beautifulsoup4 cryptography
+      - name: Enregistrer
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          LIVRE_MDP: ${{ secrets.LIVRE_MDP }}
+          CHAPITRES: ${{ inputs.chapitres }}
+          VOIX: ${{ inputs.voix }}
+          MODELE: ${{ inputs.modele }}
+          DUREE_MAX_MIN: "320"
+        run: python outils/generer_audio.py
+      - name: Sauvegarder (même en cas d'arrêt)
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add audio
+          git diff --cached --quiet && exit 0
+          git commit -m "Livre audio : enregistrement"
+          for i in 1 2 3; do git pull --rebase -q && git push -q && exit 0; sleep 5; done
+          exit 1
