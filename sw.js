@@ -1,4 +1,4 @@
-const C="mdhc-5562c7a9f3";
+const C="mdhc-5ee408d09e";
 const BASE=["./","index.html","livre.enc","manifest.webmanifest","icone-180.png","icone-192.png","icone-512.png"];
 self.addEventListener("install",e=>{ self.skipWaiting(); e.waitUntil(caches.open(C).then(c=>c.addAll(BASE)).catch(()=>{})); });
 self.addEventListener("activate",e=>{ e.waitUntil(caches.keys().then(ks=>Promise.all(ks.filter(k=>k!==C).map(k=>caches.delete(k)))).then(()=>self.clients.claim())); });
